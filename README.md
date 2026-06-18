@@ -23,6 +23,7 @@ An IPython/Jupyter widget for interactive molecular visualization, based on [Mol
 - **Grid layout** - Side-by-side comparison of multiple structures
 - **Structure fetching** - Direct download from RCSB PDB and AlphaFold Database
 - **File downloads** - Export loaded structures
+- **Selection and highlighting** - py3dmol-compatible selection specs with interactive click-to-select
 - **py3dmol-like API** - Familiar interface for easy adoption
 
 ## Installation
@@ -74,6 +75,62 @@ The panel provides controls for:
 - Solvent molecule removal
 - File downloads
 - Spin animation with speed control
+- Interactive selection and highlight clearing
+
+## Selection and Highlighting
+
+MolView supports py3dmol-style selection specs for programmatic highlighting, styling, and camera focus.
+
+### Highlight a region
+
+```python
+v = mv.view(width=800, height=600, panel=True)
+v.addModel(pdb_data)
+
+# Highlight a residue range in red
+v.highlight({'chain': 'A', 'resi': '10-20'}, color='#FF0000')
+
+# Highlight a residue type
+v.highlight({'resn': 'PHE'}, color='#FFFF00')
+
+v.show()
+```
+
+### Style a selection
+
+```python
+# Color a chain
+v.setStyle({'chain': 'A'}, {'cartoon': {'color': '#00FF00'}})
+
+# Add stick representation to specific residues
+v.addStyle({'resi': '10-20'}, {'stick': {'color': '#FF0000'}})
+```
+
+### Select and zoom
+
+```python
+# Select a region (shown with selection overlay)
+v.select({'chain': 'A', 'resi': '45-50'})
+
+# Zoom camera to a selection
+v.zoomTo({'chain': 'A', 'resi': '10-20'})
+
+# Clear selection
+v.select()
+```
+
+### Supported selection fields
+
+| Field | Example | Description |
+|-------|---------|-------------|
+| `chain` | `'A'` | Chain identifier |
+| `resi` | `10`, `'10-20'`, `[10, 20, 30]` | Residue number(s) or range(s) |
+| `resn` | `'PHE'`, `['PHE', 'TRP']` | Residue name(s) |
+| `serial` | `[1, 2, 3]` | Atom serial numbers |
+| `elem` | `'C'`, `'N'` | Element symbol |
+| `atom` | `'CA'` | Atom name |
+
+Interactive click-to-select is enabled by default. Disable it with `v.enableSelection(False)`.
 
 ## Fetching Structures
 
@@ -389,7 +446,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - [x] Multiple viewer grid support
 - [x] Export to image/video
 - [x] Surface customization options
-- [ ] Selection and highlighting
+- [x] Selection and highlighting
 - [ ] Animation playback
 - [ ] Label/annotation support
 - [ ] Additional representation styles (stick, sphere, line)

@@ -573,6 +573,32 @@
             opacity: 1;
             color: #3498db;
         }
+
+        /* Selection Controls */
+        .selection-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .selection-btn {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid hsl(214.3 31.8% 91.4%);
+            background: white;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+        .selection-btn:hover {
+            background: hsl(210 40% 96%);
+            border-color: hsl(220, 9%, 46%);
+        }
+        .selection-info {
+            font-size: 11px;
+            color: hsl(220, 9%, 46%);
+            line-height: 1.4;
+        }
         .file-download-icon svg {
             width: 100%;
             height: 100%;
@@ -877,6 +903,25 @@
                 </div>
             </div>
 
+            <!-- Selection Section -->
+            <div class="panel-section" id="selection-section">
+                <h3>Selection</h3>
+                <div class="selection-controls">
+                    <div class="toggle-item">
+                        <span class="toggle-label">Click to Select</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="interactive-selection-toggle" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <button id="clear-selection-btn" class="selection-btn">Clear Selection</button>
+                    <button id="clear-highlights-btn" class="selection-btn">Clear Highlights</button>
+                    <div id="selection-info" class="selection-info">
+                        Click atoms or residues to select them. Use Python API for programmatic highlighting.
+                    </div>
+                </div>
+            </div>
+
             <!-- Layout Section -->
             <div class="panel-section" id="layout-section">
                 <h3>Layout</h3>
@@ -931,6 +976,14 @@
         // Detection flags
         let hasSolvent = false; // Whether the structure contains solvent molecules
         let hasPLDDT = false; // Whether the structure has pLDDT data
+
+        // Selection and highlighting
+        const styleOverrides = {{style_overrides}};
+        const zoomSelection = {{zoom_selection}};
+        let interactiveSelectionEnabled = {{interactive_selection}};
+        const selectColor = '{{select_color}}';
+        const highlightColor = '{{highlight_color}}';
+        const selectionComponents = [];
 
         // Default chain colors (to cycle through when chains are detected)
         const DEFAULT_CHAIN_COLORS = [
@@ -1000,6 +1053,441 @@
             return '#' + color.toString(16).padStart(6, '0');
         }
 
+        function expandElementsSchema(elements) {
+            if (!elements) return [{}];
+
+            const schemas = [];
+            const base = { ...elements };
+            const items = base.items;
+            const ranges = base.ranges;
+            delete base.items;
+            delete base.ranges;
+
+            if (ranges && Array.isArray(ranges)) {
+                for (const range of ranges) {
+                    if (!Array.isArray(range) || range.length < 2) continue;
+                    schemas.push({
+                        ...base,
+                        beg_auth_seq_id: range[0],
+                        end_auth_seq_id: range[1]
+                    });
+                }
+            }
+
+            if (items) {
+                schemas.push({ ...base, items });
+            }
+
+            if (schemas.length === 0) {
+                schemas.push(base);
+            }
+
+            return schemas;
+        }
+
+        function buildExpressionFromElements(elements) {
+            if (!elements || typeof molstar.MolScriptBuilder === 'undefined') {
+                return null;
+            }
+
+            const MS = molstar.MolScriptBuilder;
+            const tests = {};
+
+            if (elements.auth_asym_id) {
+                tests['chain-test'] = MS.core.rel.eq([
+                    MS.struct.atomProperty.macromolecular.auth_asym_id(),
+                    elements.auth_asym_id
+                ]);
+            }
+
+            if (elements.auth_seq_id !== undefined) {
+                const seqId = elements.auth_seq_id;
+                if (Array.isArray(seqId)) {
+                    tests['residue-test'] = MS.core.rel.in([
+                        MS.struct.atomProperty.macromolecular.auth_seq_id(),
+                        seqId
+                    ]);
+                } else {
+                    tests['residue-test'] = MS.core.rel.eq([
+                        MS.struct.atomProperty.macromolecular.auth_seq_id(),
+                        seqId
+                    ]);
+                }
+            }
+
+            if (elements.beg_auth_seq_id !== undefined && elements.end_auth_seq_id !== undefined) {
+                tests['residue-test'] = MS.core.rel.inRange([
+                    MS.struct.atomProperty.macromolecular.auth_seq_id(),
+                    elements.beg_auth_seq_id,
+                    elements.end_auth_seq_id
+                ]);
+            }
+
+            if (elements.auth_comp_id) {
+                const compId = elements.auth_comp_id;
+                if (Array.isArray(compId)) {
+                    tests['residue-test'] = MS.core.rel.in([
+                        MS.struct.atomProperty.macromolecular.auth_comp_id(),
+                        compId
+                    ]);
+                } else {
+                    tests['residue-test'] = MS.core.rel.eq([
+                        MS.struct.atomProperty.macromolecular.auth_comp_id(),
+                        compId
+                    ]);
+                }
+            }
+
+            if (elements.type_symbol) {
+                const symbol = elements.type_symbol;
+                if (Array.isArray(symbol)) {
+                    tests['atom-test'] = MS.core.rel.in([
+                        MS.struct.atomProperty.core.elementSymbol(),
+                        symbol
+                    ]);
+                } else {
+                    tests['atom-test'] = MS.core.rel.eq([
+                        MS.struct.atomProperty.core.elementSymbol(),
+                        symbol
+                    ]);
+                }
+            }
+
+            if (elements.auth_atom_id) {
+                const atomId = elements.auth_atom_id;
+                if (Array.isArray(atomId)) {
+                    tests['atom-test'] = MS.core.rel.in([
+                        MS.struct.atomProperty.macromolecular.auth_atom_id(),
+                        atomId
+                    ]);
+                } else {
+                    tests['atom-test'] = MS.core.rel.eq([
+                        MS.struct.atomProperty.macromolecular.auth_atom_id(),
+                        atomId
+                    ]);
+                }
+            }
+
+            if (elements.id !== undefined) {
+                const serial = elements.id;
+                if (Array.isArray(serial)) {
+                    tests['atom-test'] = MS.core.rel.in([
+                        MS.struct.atomProperty.core.id(),
+                        serial
+                    ]);
+                } else {
+                    tests['atom-test'] = MS.core.rel.eq([
+                        MS.struct.atomProperty.core.id(),
+                        serial
+                    ]);
+                }
+            }
+
+            if (elements.group_PDB) {
+                tests['atom-test'] = MS.core.rel.eq([
+                    MS.struct.atomProperty.macromolecular.group_PDB(),
+                    elements.group_PDB
+                ]);
+            }
+
+            if (elements.model_num !== undefined) {
+                tests['model-test'] = MS.core.rel.eq([
+                    MS.struct.atomProperty.core.modelIndex(),
+                    elements.model_num
+                ]);
+            }
+
+            if (elements.items) {
+                const itemTests = [];
+                const items = elements.items;
+
+                if (items.auth_asym_id) {
+                    const chains = items.auth_asym_id;
+                    itemTests.push(MS.core.rel.in([
+                        MS.struct.atomProperty.macromolecular.auth_asym_id(),
+                        chains
+                    ]));
+                }
+
+                if (items.auth_seq_id) {
+                    itemTests.push(MS.core.rel.in([
+                        MS.struct.atomProperty.macromolecular.auth_seq_id(),
+                        items.auth_seq_id
+                    ]));
+                }
+
+                if (items.auth_comp_id) {
+                    itemTests.push(MS.core.rel.in([
+                        MS.struct.atomProperty.macromolecular.auth_comp_id(),
+                        items.auth_comp_id
+                    ]));
+                }
+
+                if (items.type_symbol) {
+                    itemTests.push(MS.core.rel.in([
+                        MS.struct.atomProperty.core.elementSymbol(),
+                        items.type_symbol
+                    ]));
+                }
+
+                if (items.auth_atom_id) {
+                    itemTests.push(MS.core.rel.in([
+                        MS.struct.atomProperty.macromolecular.auth_atom_id(),
+                        items.auth_atom_id
+                    ]));
+                }
+
+                if (items.id) {
+                    itemTests.push(MS.core.rel.in([
+                        MS.struct.atomProperty.core.id(),
+                        items.id
+                    ]));
+                }
+
+                if (itemTests.length === 1) {
+                    tests['residue-test'] = itemTests[0];
+                } else if (itemTests.length > 1) {
+                    return (Q) => Q.struct.modifier.union([
+                        Q.struct.generator.atomGroups({
+                            'residue-test': Q.core.logic.andCore(itemTests)
+                        })
+                    ]);
+                }
+            }
+
+            if (Object.keys(tests).length === 0) {
+                return null;
+            }
+
+            return (Q) => Q.struct.generator.atomGroups(tests);
+        }
+
+        function setSelectionColors(targetViewer) {
+            const v = targetViewer || viewer;
+            if (!v || !v.plugin || !v.plugin.canvas3d) return;
+
+            try {
+                const renderer = v.plugin.canvas3d.props.renderer;
+                v.plugin.canvas3d.setProps({
+                    renderer: {
+                        ...renderer,
+                        selectColor: hexToMolstarColor(selectColor),
+                        highlightColor: hexToMolstarColor(highlightColor)
+                    }
+                });
+            } catch (error) {
+                console.warn('Could not set selection colors:', error);
+            }
+        }
+
+        async function clearSelectionComponents(targetViewer) {
+            const v = targetViewer || viewer;
+            if (!v || !v.plugin) return;
+
+            try {
+                const builder = v.plugin.build();
+                for (const component of selectionComponents) {
+                    if (component && component.cell) {
+                        builder.delete(component.cell);
+                    }
+                }
+                await builder.commit();
+            } catch (error) {
+                console.warn('Could not clear selection components:', error);
+            }
+
+            selectionComponents.length = 0;
+        }
+
+        async function applyStyleToSelection(targetViewer, elements, style) {
+            const v = targetViewer || viewer;
+            if (!v || !v.plugin || !style) return;
+
+            const plugin = v.plugin;
+            const structures = plugin.managers.structure.hierarchy.current.structures;
+            if (!structures || structures.length === 0) return;
+
+            const structureCell = structures[0].cell;
+            const expression = buildExpressionFromElements(elements);
+            if (!expression) return;
+
+            const reprTypeMap = {
+                stick: 'ball-and-stick',
+                sphere: 'spacefill',
+                line: 'line',
+                cartoon: 'cartoon'
+            };
+
+            for (const [styleName, styleConfig] of Object.entries(style)) {
+                const reprType = reprTypeMap[styleName];
+                if (!reprType) continue;
+
+                const color = styleConfig && styleConfig.color ? styleConfig.color : null;
+                const label = `selection-${styleName}-${Math.random().toString(36).substring(2, 8)}`;
+
+                try {
+                    const component = await plugin.builders.structure.tryCreateComponentFromExpression(
+                        structureCell,
+                        expression,
+                        label,
+                        { label: 'Selection' }
+                    );
+
+                    if (!component) continue;
+
+                    selectionComponents.push(component);
+
+                    const reprParams = {
+                        type: reprType,
+                        colorTheme: color
+                            ? { name: 'uniform', params: { value: hexToMolstarColor(color) } }
+                            : { name: currentColorMode, params: currentColorParams }
+                    };
+
+                    await plugin.builders.structure.representation.addRepresentation(component, reprParams);
+                } catch (error) {
+                    console.warn(`Could not apply ${styleName} style to selection:`, error);
+                }
+            }
+        }
+
+        async function applyOverpaintHighlight(targetViewer, elements, color) {
+            const v = targetViewer || viewer;
+            if (!v || !v.plugin || !color) return;
+
+            const plugin = v.plugin;
+            const structures = plugin.managers.structure.hierarchy.current.structures;
+            if (!structures || structures.length === 0) return;
+
+            const expression = buildExpressionFromElements(elements);
+            if (!expression || typeof molstar.StructureElement === 'undefined') {
+                if (v.structureInteractivity) {
+                    v.structureInteractivity({ elements, action: 'select' });
+                }
+                return;
+            }
+
+            try {
+                const structureData = structures[0].cell.obj?.data;
+                if (!structureData) return;
+
+                const loci = molstar.StructureElement.Loci.fromExpression(structureData, expression);
+                if (molstar.StructureElement.Loci.isEmpty(loci)) return;
+
+                for (const structure of structures) {
+                    if (!structure.components) continue;
+
+                    for (const component of structure.components) {
+                        if (!component.representations) continue;
+
+                        for (const repr of component.representations) {
+                            const params = repr.cell.transform.params;
+                            const reprType = params?.type?.name || params?.type;
+                            if (reprType === 'gaussian-surface' || reprType === 'molecular-surface') {
+                                continue;
+                            }
+
+                            const bundle = molstar.StructureElement.Bundle.fromLoci(loci);
+                            const update = plugin.build();
+                            update.to(repr.cell).apply(
+                                molstar.StateTransforms.Representation.OverpaintStructureRepresentation3DFromBundle,
+                                {
+                                    layers: [{ bundle, color: hexToMolstarColor(color), clear: false }]
+                                }
+                            );
+                            await update.commit();
+                        }
+                    }
+                }
+            } catch (error) {
+                console.warn('Overpaint highlight failed, falling back to select:', error);
+                if (v.structureInteractivity) {
+                    v.structureInteractivity({ elements, action: 'select' });
+                }
+            }
+        }
+
+        async function applyInteractionSpec(targetViewer, spec) {
+            const v = targetViewer || viewer;
+            if (!v || !spec) return;
+
+            if (spec.action === 'clear_select') {
+                if (v.structureInteractivity) {
+                    v.structureInteractivity({ action: 'select' });
+                }
+                return;
+            }
+
+            const schemas = expandElementsSchema(spec.elements);
+            for (const schema of schemas) {
+                if (spec.action === 'style') {
+                    await applyStyleToSelection(v, schema, spec.style);
+                    continue;
+                }
+
+                if (spec.action === 'highlight') {
+                    await applyOverpaintHighlight(v, schema, spec.color || highlightColor);
+                    continue;
+                }
+
+                if (v.structureInteractivity) {
+                    const action = spec.action === 'focus' ? 'focus' : spec.action;
+                    v.structureInteractivity({ elements: schema, action });
+                }
+            }
+        }
+
+        async function applySelectionInteractions(targetViewer) {
+            const v = targetViewer || viewer;
+            if (!v) return;
+
+            setSelectionColors(v);
+            await clearSelectionComponents(v);
+
+            if (!styleOverrides || styleOverrides.length === 0) {
+                if (zoomSelection) {
+                    await applyInteractionSpec(v, zoomSelection);
+                }
+                return;
+            }
+
+            for (const spec of styleOverrides) {
+                await applyInteractionSpec(v, spec);
+            }
+
+            if (zoomSelection) {
+                await applyInteractionSpec(v, zoomSelection);
+            }
+        }
+
+        function clearInteractiveSelection() {
+            if (viewer && viewer.structureInteractivity) {
+                viewer.structureInteractivity({ action: 'select' });
+            }
+        }
+
+        async function clearAllHighlights() {
+            await clearSelectionComponents();
+            if (viewer && viewer.structureInteractivity) {
+                viewer.structureInteractivity({ action: 'highlight' });
+            }
+        }
+
+        function updateSelectionInfo() {
+            const infoEl = document.getElementById('selection-info');
+            if (!infoEl) return;
+
+            const programmaticCount = (styleOverrides || []).filter(
+                (spec) => spec.action === 'highlight' || spec.action === 'style' || spec.action === 'select'
+            ).length;
+
+            if (programmaticCount > 0) {
+                infoEl.textContent = `${programmaticCount} programmatic selection/highlight(s) applied. Click atoms to add interactive selections.`;
+            } else {
+                infoEl.textContent = 'Click atoms or residues to select them. Use Python API for programmatic highlighting.';
+            }
+        }
+
         // Initialize Molstar viewer
         async function initViewer() {
             try {
@@ -1010,7 +1498,7 @@
                     layoutShowSequence: {{show_sequence}},
                     layoutShowLog: false,
                     viewportShowExpand: false,
-                    viewportShowSelectionMode: false,
+                    viewportShowSelectionMode: interactiveSelectionEnabled,
                     viewportShowAnimation: {{show_animation}}
                 });
 
@@ -1111,6 +1599,9 @@
                         }
                     }, 500);
                 }
+
+                // Apply programmatic selections and highlights
+                await applySelectionInteractions();
 
                 console.log('Structure loaded successfully');
             } catch (error) {
@@ -2178,9 +2669,13 @@
             }
         }
 
-        // Zoom to structure
+        // Zoom to structure or selection
         function zoomTo() {
-            if (viewer) {
+            if (!viewer) return;
+
+            if (zoomSelection) {
+                applyInteractionSpec(viewer, zoomSelection);
+            } else {
                 viewer.plugin.managers.camera.reset();
             }
         }
@@ -2267,6 +2762,38 @@
             if (panelEnabled && panel) {
                 panel.classList.add('visible');
                 setupPanelControls();
+                setupSelectionControls();
+                updateSelectionInfo();
+            }
+        }
+
+        function setupSelectionControls() {
+            const interactiveToggle = document.getElementById('interactive-selection-toggle');
+            const clearSelectionBtn = document.getElementById('clear-selection-btn');
+            const clearHighlightsBtn = document.getElementById('clear-highlights-btn');
+
+            if (interactiveToggle) {
+                interactiveToggle.checked = interactiveSelectionEnabled;
+                interactiveToggle.addEventListener('change', (event) => {
+                    interactiveSelectionEnabled = event.target.checked;
+                    if (viewer && viewer.plugin && viewer.plugin.layout) {
+                        viewer.plugin.layout.setProps({
+                            viewportShowSelectionMode: interactiveSelectionEnabled
+                        });
+                    }
+                });
+            }
+
+            if (clearSelectionBtn) {
+                clearSelectionBtn.addEventListener('click', () => {
+                    clearInteractiveSelection();
+                });
+            }
+
+            if (clearHighlightsBtn) {
+                clearHighlightsBtn.addEventListener('click', async () => {
+                    await clearAllHighlights();
+                });
             }
         }
 
@@ -3197,7 +3724,7 @@
                     layoutShowSequence: false,
                     layoutShowLog: false,
                     viewportShowExpand: false,
-                    viewportShowSelectionMode: false,
+                    viewportShowSelectionMode: interactiveSelectionEnabled,
                     viewportShowAnimation: false
                 });
 
@@ -4111,7 +4638,7 @@
                     layoutShowSequence: false,
                     layoutShowLog: false,
                     viewportShowExpand: false,
-                    viewportShowSelectionMode: false,
+                    viewportShowSelectionMode: interactiveSelectionEnabled,
                     viewportShowAnimation: false
                 });
 

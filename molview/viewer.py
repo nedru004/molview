@@ -8,6 +8,7 @@ from pathlib import Path
 from IPython.display import HTML, display
 
 from .colors import get_color_theme, RAINBOW_PALETTES
+from .selection import build_interaction_spec, normalize_style
 
 
 class MolView:
@@ -84,6 +85,14 @@ class MolView:
             'sphere': False,
             'line': False
         }
+
+        # Selection and highlighting
+        self.style_overrides = []
+        self.highlights = []
+        self.zoom_selection = None
+        self.interactive_selection = True
+        self.select_color = '#FFCC11'
+        self.highlight_color = '#FFCC11'
 
     def _detect_format(self, data):
         """
@@ -250,19 +259,19 @@ class MolView:
 
         return self
 
-    def setStyle(self, style=None, **kwargs):
+    def setStyle(self, spec=None, style=None, **kwargs):
         """
-        Set molecular representation style.
-
-        Note: Currently only cartoon mode is fully supported.
-        Additional styles coming soon.
+        Set molecular representation style, optionally for a selection.
 
         Parameters
         ----------
+        spec : dict, optional
+            py3dmol selection spec (e.g. ``{'chain': 'A', 'resi': '10-20'}``)
+            or global style dict when ``style`` is omitted.
         style : dict, optional
-            Style dictionary (py3dmol format)
+            Style dictionary in py3dmol format (e.g. ``{'cartoon': {'color': '#FF0000'}}``)
         **kwargs : dict
-            Style parameters
+            Style parameters (legacy)
 
         Returns
         -------
@@ -272,15 +281,144 @@ class MolView:
         Examples
         --------
         >>> v.setStyle({'cartoon': {}})
+        >>> v.setStyle({'chain': 'A'}, {'cartoon': {'color': '#00FF00'}})
+        >>> v.setStyle({'resi': '10-20'}, {'stick': {'color': '#FF0000'}})
         """
-        if style is not None:
-            if 'cartoon' in style:
-                self.style_settings['cartoon'] = True
-            if 'stick' in style:
-                self.style_settings['stick'] = True
-            if 'sphere' in style:
-                self.style_settings['sphere'] = True
+        if spec is None and style is None:
+            return self
 
+        # py3dmol: setStyle(style) when first arg is a style dict
+        if style is None and spec is not None:
+            style_keys = {'cartoon', 'stick', 'sphere', 'line', 'cross'}
+            if any(key in spec for key in style_keys):
+                style = spec
+                spec = None
+
+        if style is not None:
+            normalized = normalize_style(style)
+            for repr_type in ('cartoon', 'stick', 'sphere', 'line'):
+                if repr_type in normalized:
+                    self.style_settings[repr_type] = True
+
+            if spec is not None:
+                self.style_overrides.append(
+                    build_interaction_spec(spec, 'style', style=style, additive=False)
+                )
+        elif spec is not None:
+            self.style_overrides.append(
+                build_interaction_spec(spec, 'style', style={'cartoon': {}}, additive=False)
+            )
+
+        return self
+
+    def addStyle(self, spec, style):
+        """
+        Add a style to a selection without replacing existing styles.
+
+        Parameters
+        ----------
+        spec : dict
+            py3dmol selection spec
+        style : dict
+            Style dictionary in py3dmol format
+
+        Returns
+        -------
+        self
+            For method chaining
+
+        Examples
+        --------
+        >>> v.addStyle({'chain': 'A'}, {'stick': {'color': '#FF0000'}})
+        >>> v.addStyle({'resn': 'PHE'}, {'sphere': {'color': '#FFFF00'}})
+        """
+        normalized = normalize_style(style)
+        for repr_type in ('cartoon', 'stick', 'sphere', 'line'):
+            if repr_type in normalized:
+                self.style_settings[repr_type] = True
+
+        self.style_overrides.append(
+            build_interaction_spec(spec, 'style', style=style, additive=True)
+        )
+        return self
+
+    def highlight(self, spec, color='#FFFF00'):
+        """
+        Highlight a selection with a persistent color overlay.
+
+        Parameters
+        ----------
+        spec : dict
+            py3dmol selection spec
+        color : str, optional
+            Hex color for the highlight (default: '#FFFF00')
+
+        Returns
+        -------
+        self
+            For method chaining
+
+        Examples
+        --------
+        >>> v.highlight({'chain': 'A'})
+        >>> v.highlight({'resi': '10-20'}, color='#FF0000')
+        >>> v.highlight({'resn': 'PHE'}, color='#00FF00')
+        """
+        self.highlights.append(
+            build_interaction_spec(spec, 'highlight', color=color)
+        )
+        return self
+
+    def select(self, spec=None, color=None):
+        """
+        Select elements in the structure.
+
+        Parameters
+        ----------
+        spec : dict, optional
+            py3dmol selection spec. Pass ``None`` to clear selection.
+        color : str, optional
+            Hex color for the selection overlay
+
+        Returns
+        -------
+        self
+            For method chaining
+
+        Examples
+        --------
+        >>> v.select({'chain': 'A', 'resi': '45-50'})
+        >>> v.select()  # clear selection
+        """
+        if color is not None:
+            self.select_color = color
+
+        if spec is None:
+            self.style_overrides = [
+                item for item in self.style_overrides if item.get('action') != 'select'
+            ]
+            self.style_overrides.append({'action': 'clear_select'})
+        else:
+            self.style_overrides.append(
+                build_interaction_spec(spec, 'select', color=self.select_color)
+            )
+        return self
+
+    def enableSelection(self, enabled=True):
+        """
+        Enable or disable interactive click-to-select in the viewport.
+
+        Parameters
+        ----------
+        enabled : bool, optional
+            Enable interactive selection (default: True)
+
+        Returns
+        -------
+        self
+            For method chaining
+        """
+        self.interactive_selection = enabled
         return self
 
     def setColorMode(self, mode, **kwargs):
@@ -442,12 +580,12 @@ class MolView:
 
     def zoomTo(self, sel=None):
         """
-        Reset camera to fit the structure.
+        Reset camera to fit the structure or zoom to a selection.
 
         Parameters
         ----------
         sel : dict, optional
-            Selection (not implemented, for py3dmol compatibility)
+            py3dmol selection spec to focus on. If omitted, fits the whole structure.
 
         Returns
         -------
@@ -457,8 +595,12 @@ class MolView:
         Examples
         --------
         >>> v.zoomTo()
+        >>> v.zoomTo({'chain': 'A', 'resi': '10-20'})
         """
-        # Will be handled by JavaScript
+        if sel is None:
+            self.zoom_selection = None
+        else:
+            self.zoom_selection = build_interaction_spec(sel, 'focus')
         return self
 
     def spin(self, enabled=True, speed=0.2):
@@ -626,6 +768,18 @@ class MolView:
                     return (row, col)
         raise ValueError(f"Grid is full ({self.rows}x{self.cols})")
 
+    def _inject_selection_vars(self, html, bool_to_js):
+        """Inject selection/highlight template variables."""
+        interactions = list(self.style_overrides) + list(self.highlights)
+        return (
+            html
+            .replace('{{style_overrides}}', json.dumps(interactions))
+            .replace('{{zoom_selection}}', json.dumps(self.zoom_selection))
+            .replace('{{interactive_selection}}', bool_to_js(self.interactive_selection))
+            .replace('{{select_color}}', self.select_color)
+            .replace('{{highlight_color}}', self.highlight_color)
+        )
+
     def _generate_single_html(self, bool_to_js):
         """Generate HTML for single viewer mode."""
         template_path = Path(__file__).parent / 'templates' / 'viewer.html'
@@ -680,7 +834,7 @@ class MolView:
             })
         html = html.replace('{{all_models}}', json.dumps(all_models_data))
 
-        return html
+        return self._inject_selection_vars(html, bool_to_js)
 
     def _generate_grid_html(self, bool_to_js):
         """Generate HTML for grid viewer mode."""
@@ -733,7 +887,7 @@ class MolView:
         html = html.replace('{{structure_format}}', 'pdb')
         html = html.replace('{{all_models}}', '[]')  # Empty for grid mode
 
-        return html
+        return self._inject_selection_vars(html, bool_to_js)
 
     # Additional py3dmol-compatible methods for future implementation
 
