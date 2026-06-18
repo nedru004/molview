@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "A Molstar-based protein viewer for Jupyter notebooks with py3dmol-compatible API"
 readme = "README.md"
 requires-python = ">=3.7"
-license = "MIT"
+license = {text = "MIT"}
 authors = [
     {name = "Steven Yu"}
 ]
